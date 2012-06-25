@@ -1,6 +1,6 @@
 {
     "name": "mies",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "url": "http://www.unifiedapplications.com/github/Mies",
     "description": "Modular layout system for Bauhaus library",
     "keywords": ["functional", "underscore", "array", "javascript", "nodejs", "lists", "list", "data", "data structures", "ui", "modular"],
