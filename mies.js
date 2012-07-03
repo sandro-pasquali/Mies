@@ -1013,7 +1013,8 @@ var mies = {
 	//																					//
 	//////////////////////////////////////////////////////////////////////////////////////
 
-
+	//	##publish
+	//
 	//	Will Publish to a route, causing a broadcast from the server which can
 	//	be subscribed to (on same route).
 	//
@@ -1123,20 +1124,29 @@ var mies = {
 		return subscribe(route, handler);
 	},
 
+	//	##action
+	//
+	action : function(fn) {
+
+		ADD_SUB_HANDLER("action", fn);
+
+		return this;
+	},
+
+	//	##broadcast
+	//
+	broadcast : function(fn) {
+
+		ADD_SUB_HANDLER("broadcast", fn);
+
+		return this;
+	},
+
 	//	##error
 	//
 	error	: function(fn) {
 
 		ADD_SUB_HANDLER("error", fn);
-
-		return this;
-	},
-
-	//	##done
-	//
-	done : function(fn) {
-
-		ADD_SUB_HANDLER("done", fn);
 
 		return this;
 	},
@@ -1183,21 +1193,46 @@ var mies = {
 			rob = ROUTES[i];
 			m 	= r.match(rob.regex);
 			if(m) {
-
 				//	This is the full route, first arg of successful match.
 				//
-				r 		= m.shift();
-				args	= m.concat(action, passed, r);
+				r = m.shift();
 
-				rob.handler.apply(result, args);
+				//	Either a client action (action) or a S.S.E. (broadcast).
+				//	All subscribe handlers receive three arguments:
+				//
+				//	1. 	The action. This is only relevant on client actions, where
+				//		it will be something like "click" or "mouseup". S.S.E.
+				//		will always be of action type "broadcast".
+				//	2.	Passed object. Client actions may pass along values (sent
+				//		when #publish is called. Broadcasts never have passed arguments,
+				//		so this will always be an empty object.
+				//	3. 	The route. Both types receive this.
+				//
+				//	#always is (ahem) always called, regardless of whether action or
+				//	broadcast, receiving the same arguments.
+				//
+				//	#error is only called if the #result#error is not undefined.
+				//
+				//	All methods except for #error are called in the scope of the #result.
+				//	#error is called within the #callObject scope, which is the scope
+				//	this method (#route) is called within.  The call object, usefully for
+				//	#error, has a #retry method.  See #publish.
+				//
+				//	@see	#publish
+				//
+				args = m.concat(action, passed, r);
 
 				if(result.error) {
 					rob.error && rob.error.apply(this, args);
 				} else {
-					rob.done && rob.done.apply(this, args);
+					if(action === "broadcast") {
+						rob.broadcast && rob.broadcast.apply(result, args);
+					} else {
+						rob.action && rob.action.apply(result, args);
+					}
 				}
 
-				rob.always && rob.always.apply(this, args);
+				rob.always && rob.always.apply(result, args);
 			}
 		}
 
@@ -1257,10 +1292,14 @@ var mies = {
 			return ret;
 		}
 
-		//	Lose unnecessary trailing slashes
+		//	Leading and trailing slashes are optional. We remove these from the
+		//	route and bracket all route regexes with `/?`.
 		//
 		if(route.charAt(route.length -1) === "/") {
 			route = route.substring(0, route.length -1);
+		};
+		if(route.charAt(0) === "/") {
+			route = route.substring(1, Infinity);
 		};
 
 		//	Replace all :key tokens with a group which captures any string of characters
@@ -1269,9 +1308,9 @@ var mies = {
 		//	Note as well that the "intra-slash" matcher ([^/]*) will match any non-slash
 		//	character between 0(zero) and N times -- which means that a route like
 		//	/foo/:bar/:baz will be matched given foo/// or foo/23// or foo/23/
-		//	(but not foo/23) -- noting as well that the trailing slash is optional (/?$).
+		//	(but not foo/23).
 		//
-		ret.serialized	= new String('^' + route + '/?$').replace(/:([\w]+)/g, function(token, key, idx, orig) {
+		ret.serialized	= new String('^/?' + route + '/?$').replace(/:([\w]+)/g, function(token, key, idx, orig) {
 			return "([^/]*)";
 		})
 
