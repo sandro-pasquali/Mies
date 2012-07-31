@@ -4,6 +4,7 @@
 //	http://www.w3.org/TR/eventsource/
 //
 (function (global) {
+  "use strict";
 
   function EventTarget() {
     return this;
@@ -19,18 +20,30 @@
     invokeEvent: function (event) {
       var type = String(event.type),
         i = this.nextListener,
-        phase = event.eventPhase;
+        phase = event.eventPhase,
+        candidates = {
+          next: null
+        },
+        j = candidates;
       while (i) {
-        if (i.type === type && !(!i.capture && phase === 1) && !(i.capture && phase === 3)) {
-          event.currentTarget = this;
-          try {
-            i.callback.call(this, event);
-          } catch (e) {
-            this.throwError(e);
-          }
-          event.currentTarget = null;
+        if (i.type === type && !(phase === 1 && !i.capture) && !(phase === 3 && i.capture)) {
+          j = j.next = {
+            callback: i.callback,
+            next: null
+          };
         }
         i = i.nextListener;
+      }
+      j = candidates.next;
+      while (j) {
+        event.currentTarget = this;
+        try {
+          j.callback.call(this, event);
+        } catch (e) {
+          this.throwError(e);
+        }
+        event.currentTarget = null;
+        j = j.next;
       }
     },
     dispatchEvent: function (event) {
@@ -60,22 +73,13 @@
       type = String(type);
       capture = Boolean(capture);
       var listener = this,
-        i = listener.nextListener,
-        tmp;
+        i = listener.nextListener;
       while (i) {
         if (i.type === type && i.callback === callback && i.capture === capture) {
           listener.nextListener = i.nextListener;
-          break;
-        } else {
-          tmp = {
-            nextListener: null,
-            type: i.type,
-            callback: i.callback,
-            capture: i.capture
-          };
-          listener.nextListener = tmp;
-          listener = tmp;
+          return;
         }
+        listener = i;
         i = i.nextListener;
       }
     }
@@ -391,14 +395,11 @@
   EventSource.CLOSED = CLOSED;
   proto = null;
 
-  //if (!('withCredentials' in global.EventSource.prototype)) { // to detect CORS in FF 11
   if (Transport) {
     global.EventSource = EventSource;
   }
-  //}
 
 }(this));
-
 
 $(function() {
 
@@ -418,18 +419,18 @@ $(function() {
 //
 var doT = {
 	version: '0.2.0',
-	templateSettings: {
-		evaluate:    /\{\{([\s\S]+?)\}\}/g,
-		interpolate: /\{\{=([\s\S]+?)\}\}/g,
-		encode:      /\{\{!([\s\S]+?)\}\}/g,
-		use:         /\{\{#([\s\S]+?)\}\}/g,
-		define:      /\{\{##\s*([\w\.$]+)\s*(\:|=)([\s\S]+?)#\}\}/g,
-		conditional: /\{\{\?(\?)?\s*([\s\S]*?)\s*\}\}/g,
-		iterate:     /\{\{~\s*(?:\}\}|([\s\S]+?)\s*\:\s*([\w$]+)\s*(?:\:\s*([\w$]+))?\s*\}\})/g,
-		varname: 'binding',
-		strip: true,
-		append: true,
-		selfcontained: false
+	templateSettings	: {
+		evaluate		: /\{\{([\s\S]+?)\}\}/g,
+		interpolate		: /\{\{=([\s\S]+?)\}\}/g,
+		encode			: /\{\{!([\s\S]+?)\}\}/g,
+		use				: /\{\{#([\s\S]+?)\}\}/g,
+		define			: /\{\{##\s*([\w\.$]+)\s*(\:|=)([\s\S]+?)#\}\}/g,
+		conditional		: /\{\{\?(\?)?\s*([\s\S]*?)\s*\}\}/g,
+		iterate			: /\{\{~\s*(?:\}\}|([\s\S]+?)\s*\:\s*([\w$]+)\s*(?:\:\s*([\w$]+))?\s*\}\})/g,
+		varname			: 'binding',
+		strip			: true,
+		append			: true,
+		selfcontained	: false
 	},
 	template: undefined, //fn, compile template
 	compile:  undefined  //fn, for express
@@ -606,7 +607,31 @@ var CALLS			= {};
 var SUBSCRIPTIONS	= {};
 var LAST_SUBSCRIBE	= null;
 var MURMUR_SEED		= parseInt(Math.random() * 10000);
+
+//	Adjustment for trim methods.
+//
+//	See http://forum.jquery.com/topic/faster-jquery-trim.
+//	See: http://code.google.com/p/chromium/issues/detail?id=5206
+//	Below is a fix for browsers which do not recognize &nbsp; as a whitespace character.
+//
+//	@see		#trim
+//	@see		#trimLeft
+//	@see		#trimRight
+//
+var TRIM_LEFT	= /^\s+/;
+var TRIM_RIGHT	= /\s+$/;
+
+if(!/\s/.test("\xA0")) {
+	TRIM_LEFT 	= /^[\s\xA0]+/;
+	TRIM_RIGHT 	= /[\s\xA0]+$/;
+}
+
+//	Whether #trim is a native String method.
+//
+var NATIVE_TRIM	= !!("".trim);
+
 var PING_CHECK;
+var LAST_CALL_ID;
 
 //	@see	#nextId
 //
@@ -627,7 +652,7 @@ var ACTION_SELECTOR	= "[data-action]";
 //	These are exposed via #mies#setOption
 //
 var OPTIONS = {
-	maxRetries 	: 5,
+	maxRetries 	: 3,
 	callTimeout	: 5000
 };
 
@@ -637,7 +662,7 @@ var OPTIONS = {
 //	@see	#mies#always
 //
 var ADD_SUB_HANDLER = function(meth, fn) {
-	if(LAST_SUBSCRIBE && typeof fn === "function") {
+	if(LAST_SUBSCRIBE) {
 		LAST_SUBSCRIBE[meth] = fn;
 	}
 };
@@ -675,6 +700,7 @@ var	ITERATOR = function(targ, fn, acc, ctxt) {
 		len = targ.length;
 		while(x < len) {
 			acc = fn.call(ctxt, targ[x], x, targ, acc);
+
 			if(acc === true) {
 				break;
 			}
@@ -696,11 +722,11 @@ var	ITERATOR = function(targ, fn, acc, ctxt) {
 
 //	##FIND
 //
-//	Find a value in the store.
+//	Find nodes in an object.
 //
 //	@see	#find
 //
-var FIND 	= function(key, val, path, t, acc, curKey) {
+var FIND 	= function(key, val, path, obj, acc, curKey) {
 
     //  Keep @path a string
     //
@@ -715,7 +741,7 @@ var FIND 	= function(key, val, path, t, acc, curKey) {
 		value	: val
 	};
 
-	var node = t;
+	var node = obj;
 	var p;
 
 	//	Accumulate info on any hits against this node.
@@ -745,6 +771,32 @@ var FIND 	= function(key, val, path, t, acc, curKey) {
 
 var mies = {
 
+	//	##_callObj
+	//
+	//	An internal method, a constructor, which creates a call object suitable
+	//	for existence on the #CALLS stack.
+	//
+	_callObj : function(opts) {
+		opts = opts || {};
+
+		this.result	= opts.result || {};
+		this.time	= new Date().getTime();
+		this.tries	= 0;
+		this._tries	= 0;
+		this.retry	= opts.args ? function() {
+			++this._tries;
+			if(this._tries < this.tries) {
+				mies.publish.apply(mies, this.args);
+				return true;
+			}
+			return false;
+		} : $.noop;
+
+		this.args 	= opts.args 	|| [];
+		this.route	= opts.route 	|| "";
+		this.passed	= opts.passed 	|| "";
+	},
+
 	//	##set
 	//
 	//	Set a value at key.
@@ -752,8 +804,8 @@ var mies = {
 	//	If you would like to have the value you've just set returned, use #setget.
 	//	Otherwise, `this` (Mies) is returned.
 	//
-	set : function(key, value) {
-		STORE[key] = value;
+	set : function(key, value, obj) {
+		(obj || STORE)[key] = value;
 		return this;
 	},
 
@@ -761,9 +813,10 @@ var mies = {
 	//
 	//	Set only if the value of key is undefined.
 	//
-	setnx : function(key, value) {
-		if(typeof STORE[key] === void 0) {
-			this.set(key, value);
+	setnx : function(key, value, obj) {
+		obj = obj || STORE;
+		if(typeof obj[key] === void 0) {
+			this.set(key, value, obj);
 		}
 
 		return this;
@@ -773,17 +826,17 @@ var mies = {
 	//
 	//	Set a value at key AND return the value set.
 	//
-	getset : function(key, value) {
-		this.set(key, value);
-		return this.get(key);
+	getset : function(key, value, obj) {
+		this.set(key, value, obj);
+		return this.get(key, obj);
 	},
 
 	//	##get
 	//
 	//	Get value at key.
 	//
-	get : function(key) {
-		return STORE[key];
+	get : function(key, obj) {
+		return (obj || STORE)[key];
 	},
 
 	//  ##find
@@ -800,12 +853,16 @@ var mies = {
 		return FIND(key, val, path, t || STORE);
 	},
 
+	//	##each
+	//
     each : function(targ, fn, acc, scope) {
         return ITERATOR(targ, function(elem, idx, targ) {
         	fn.call(scope, elem, idx, targ);
         }, acc);
     },
 
+	//	##map
+	//
 	map : function(targ, fn, acc, scope) {
 		return ITERATOR(targ, function(elem, idx, targ, acc) {
             acc[idx] = fn.call(scope, elem, idx, targ);
@@ -813,6 +870,8 @@ var mies = {
         }, acc);
    	},
 
+	//	##filter
+	//
 	filter : function(targ, fn, acc, scope) {
         return ITERATOR(targ, function(elem, idx, targ, acc) {
             fn.call(scope, elem, idx, targ) && acc.push(elem);
@@ -820,19 +879,74 @@ var mies = {
         }, acc);
     },
 
+	//	##all
+	//
     all : function(targ, fn, acc, scope) {
-        return ITERATOR(targ, function(elem, idx, targ, acc) {
-            fn.call(scope, elem, idx, targ) && acc.push(1);
-            return acc;
-        }, acc).length === targ.length;
+    	var hit = true;
+        ITERATOR(targ, function(elem, idx, targ, acc) {
+            if(!fn.call(scope, elem, idx, targ)) {
+            	hit = false;
+            	return true;
+            }
+        });
+
+        return hit;
     },
 
+	//	##any
+	//
 	any : function(targ, fn, acc, scope) {
-        return ITERATOR(targ, function(elem, idx, targ, acc) {
-            fn.call(scope, elem, idx, targ) && acc.push(1);
-            return acc;
-        }, acc).length > 0;
+		var hit = false;
+        ITERATOR(targ, function(elem, idx, targ, acc) {
+            if(fn.call(scope, elem, idx, targ)) {
+            	hit = true;
+            	return true;
+            }
+        });
+
+        return hit;
     },
+
+	//	##pluck
+	//
+    pluck : function(targ, targAtt) {
+        return ITERATOR(targ, function(elem, idx, targ, acc) {
+            elem.hasOwnProperty(targAtt) && acc.push(elem[targAtt]);
+        	return acc;
+        }, []);
+    },
+
+	//	##leftTrim
+	//
+	//	Removes whitespace from beginning of a string.
+	//
+	//	@param		{String}	t	The string to trim.
+	//
+	leftTrim : function(t) {
+		return t.replace(TRIM_LEFT, "");
+	},
+
+	//	##rightTrim
+	//
+	//	Removes whitespace from end of a string.
+	//
+	//	@param		{String}	t	The string to trim.
+	//
+	rightTrim : function(t) {
+		return t.replace(TRIM_RIGHT, "");
+	},
+
+	//	##trim
+	//
+	//	Removes whitespace from beginning and end of a string.
+	//
+	//	@param		{String}	[t]	The string to trim.
+	//
+	trim : function(t) {
+		return 	NATIVE_TRIM
+					? t.trim()
+					: t.replace(TRIM_LEFT, "").replace(TRIM_RIGHT, "");
+	},
 
     //	##nextId
     //
@@ -842,6 +956,57 @@ var mies = {
     	COUNTER += 1;
     	return pref ? pref + COUNTER : COUNTER;
     },
+
+	// 	##is
+	//
+	//	@param		{Mixed}		type		An object type.
+	// 	@param		{Mixed}		val			The value to check.
+	//	@type		{Boolean}
+	//
+	// Checks whether `val` is of requested `type`.
+	//
+	is : function(type, val) {
+
+		//	Here we're allowing for a check of undefined:
+		//	mies.is(undefined, [some undefined var]) // true
+		//
+		//	Otherwise, we throw an error (rare case
+		//
+		if(type === void 0) {
+			return val === type;
+		}
+
+		if(val === void 0) {
+			return false;
+		}
+
+		var p;
+
+		switch(type) {
+			case Array:
+				return OP_TO_STRING.call(val) === '[object Array]';
+			break;
+
+			case Object:
+				return OP_TO_STRING.call(val) === '[object Object]';
+			break;
+
+			case "numeric":
+				return !isNaN(parseFloat(val)) && isFinite(val);
+			break;
+
+			case "emptyObject":
+				for(p in val) {
+					return false;
+				}
+				return true;
+			break;
+
+			default:
+				return val.constructor === type;
+			break;
+		}
+	},
 
     //	##murmurhash
     //
@@ -916,6 +1081,27 @@ var mies = {
 		if(arguments.length === 2 && OPTIONS[k]) {
 			OPTIONS[k] = v;
 		}
+	},
+
+	//	##extend
+	//
+	//	Adds a method to Mies. Simply does some checking to ensure validity.
+	//
+	//	@param	{Mixed}		name	The name of the method. You may send multiple
+	//								meth/func pairs by passing a map as #name.
+	//	@param	{Function}	[func]	If sending a {String} #name, the method.
+	//
+	extend	: function(name, func) {
+		if(mies.is(Object, name)) {
+			var p;
+			for(p in name) {
+				mies.extend(n, name[p]);
+			}
+		} else if(!mies.hasOwnProperty(name) && typeof func === "function") {
+			mies[name] = func;
+		}
+
+		return this;
 	},
 
 	//////////////////////////////////////////////////////////////////////////////////////
@@ -1018,78 +1204,80 @@ var mies = {
 	//	Will Publish to a route, causing a broadcast from the server which can
 	//	be subscribed to (on same route).
 	//
-	//	@param	{String}	route
+	//	@param	{Mixed}		Either a route, or an Array of routes.
 	//	@param	{Object}	[postdata]	This is always a POST.
 	//	@param	{Mixed}		[passed]	Data to be passed along to any handlers.
-	//	@param	{Boolean}	[mass]		Whether to do a mass broadcast.
+	//	@param	{Boolean}	[bType]		Whether to do a mass broadcast.
 	//
 	//	@see	#massPublish
 	//
-	publish : function(route, postdata, passed, mass) {
-
+	publish : function(route, postdata, passed, bType) {
 		postdata = postdata || {};
 
 		//	Create a unique hash of sent arguments, which allows us
 		//	to cache results.
-		var id = this.murmurhash(JSON.stringify(arguments), MURMUR_SEED);
-
-		//	If there is a cached result, return that. Otherwise, refresh call.
 		//
-		if(CALLS[id]) {
+		LAST_CALL_ID = this.murmurhash(JSON.stringify(arguments), MURMUR_SEED);
 
-			this.routeBroadcast(id, CALLS[id].result, 1);
-
-		} else {
-
-			CALLS[id] = {
+		//	Keep existing call objects for identical call signatures.
+		//
+		if(!CALLS[LAST_CALL_ID]) {
+			CALLS[LAST_CALL_ID] = new mies._callObj({
 				args		: AP_SLICE.call(arguments),
 				route		: route,
-				passed		: passed,
-				result		: {},
-				time		: new Date().getTime(),
-				tries		: 1,
-				retry		: function() {
-					if(++this.tries < OPTIONS.maxRetries) {
-						mies.publish.apply(mies, this.args);
-					}
-				}
-			};
-
-			$.ajax({
-				type		: "POST",
-				url			: route,
-				data		: postdata,
-				dataType	: "json",
-				headers		: {
-					"x-mies-callid"		: id,
-					"x-mies-broadcast"	: mass ? 2 : 1
-				},
-				timeout		: OPTIONS.callTimeout
+				passed		: passed
 			});
 		}
+
+		//	Of note:
+		//
+		//	The -call-id header is echoed by the server on an event, sent
+		//	as the value of #lastEventId (@see #join). On mass publish
+		//	we are sending the route (as the specific details of the individual client
+		//	call objects have no relevance across n clients).
+		//
+		$.ajax({
+			type		: "POST",
+			url			: route,
+			data		: postdata,
+			dataType	: "json",
+			headers		: {
+				"x-mies-callid"		: bType ? route : LAST_CALL_ID,
+				"x-mies-broadcast"	: bType || 1
+			},
+			timeout		: OPTIONS.callTimeout
+		});
 
 		return this;
 	},
 
 	//	##massPublish
 	//
-	//	A shortcut bridge to #publish, letting you mass publish by only setting
-	//	@route and @postdata. Also recommended for code clarity.
+	//	A shortcut bridge to #publish. Also recommended for code clarity.
 	//
 	//	@see	#publish
 	//
 	massPublish : function(route, postdata, passed) {
-		return publish(route, postdata, passed, 1);
+		return mies.publish(route, postdata, passed, 2);
 	},
 
+	//	##nearPublish
+	//
+	//	A shortcut bridge to #publish. Also recommended for code clarity.
+	//
+	//	@see	#publish
+	//
+	nearPublish : function(route, postdata, passed) {
+		return mies.publish(route, postdata, passed, 3);
+	},
+
+	//	##subscribe
+	//
 	//	Register a route for this interface which can now be published to.
 	//
-	//	@param	{String}	route	You subscribe to routes.
-	//	@param	{Function}	handler	The method to call when route is published to.
-	//								Recieves args [action, passed, route], and is
-	//								called in the context of the published data.
+	//	@param	{String}	route
 	//
-	subscribe : function(route, handler) {
+	subscribe : function(route, times) {
 		var p = this.parseRoute(route);
 
 		//	Note that no checking is done for duplicate route subscription. This
@@ -1099,18 +1287,18 @@ var mies = {
 		if(typeof p === "object" && p.compiled) {
 			LAST_SUBSCRIBE = ROUTES[ROUTES.push({
 				regex	: p.compiled,
-				handler	: handler
+				times	: times
 			}) -1];
 		}
 
 		return this;
 	},
 
-	//	#subscribenx
+	//	##subscribenx
 	//
 	//	Only subscribe if this route has no other subscribers.
 	//
-	subscribenx : function(route, handler) {
+	subscribenx : function(route, handler, times) {
 		var p = this.parseRoute(route);
 		var i = ROUTES.length;
 		//	An identical route has already been registered. Exit.
@@ -1121,7 +1309,20 @@ var mies = {
 			}
 		}
 
-		return subscribe(route, handler);
+		return subscribe(route, handler, times);
+	},
+
+	//	##unsubscribe
+	//
+	unsubscribe : function(route, handler) {
+		var len = ROUTES.length;
+		while(len--) {
+			if(ROUTES[len].handler === handler) {
+				delete ROUTES[len];
+			}
+		}
+
+		return this;
 	},
 
 	//	##action
@@ -1160,6 +1361,13 @@ var mies = {
 		return this;
 	},
 
+	//	##retry
+	//
+	retry : function(r) {
+		CALLS[LAST_CALL_ID].tries = Math.min(OPTIONS.maxRetries, 1*r);
+		return this;
+	},
+
 	//	##route
 	//
 	//	Routes an action. There are two types of action: [A]UI Action (click, etc), and
@@ -1179,11 +1387,10 @@ var mies = {
 	//	@param	{Mixed}		[passed]	Any data passed by the original call.
 	//
 	//	@see	#bindUI
-	//	@see	#bindEventSource
+	//	@see	#join
 	//	@see	#publish
 	//
 	route : function(r, action, result, passed) {
-
 		var i 	= ROUTES.length;
 		var m;
 		var rob;
@@ -1191,7 +1398,17 @@ var mies = {
 
 		while(i--) {
 			rob = ROUTES[i];
-			m 	= r.match(rob.regex);
+			
+			//	If the regex matches (not null) will receive an array, whose first argument
+			//	is the full route, and subsequent args will be any :part matches on 
+			//	the route. The first arg is shifted out, below, leaving only :part matches,
+			//	which come to form the first arguments sent to route event handlers.
+			//
+			//	@example	route: "/foo/bar/:baz" < "foo/bar/something"
+			//				m = ["foo/bar/something","something"]
+			//
+			m = r.match(rob.regex);
+
 			if(m) {
 				//	This is the full route, first arg of successful match.
 				//
@@ -1233,6 +1450,15 @@ var mies = {
 				}
 
 				rob.always && rob.always.apply(result, args);
+
+				//	For routes with a limit on call # remove if we've reached it.
+				//
+				if(rob.times) {
+					rob.times--;
+					if(rob.times < 1) {
+						ROUTES.splice(i, 1);
+					}
+				}
 			}
 		}
 
@@ -1246,24 +1472,32 @@ var mies = {
 	//
 	//	@param	{String}	id		The call id.
 	//	@param	{Object}	result	The server response.
-	//	@param	{Boolean}	keep	Whether or not to cache results.
 	//
-	routeBroadcast : function(id, result, keep) {
+	routeBroadcast : function(id, result) {
 		var callObj = CALLS[id];
 		if(!callObj) {
 			return this;
 		}
 
 		callObj.result 	= result;
-		callObj.keep	= keep;
 
-		this.route.call(callObj, callObj.route, "broadcast", result, callObj.passed);
-
-		//	If event #id starts with bang(!) we are being told to cache
-		//	results. Don't delete if so.
-		//
-		if(!keep) {
+		var cleanup = function() {
+			mies.route.call(callObj, callObj.route, "broadcast", result, callObj.passed);
 			delete CALLS[id];
+		}
+
+		//	If in an error state and a retry was requested, run #retry.
+		//	Otherwise route, then destroy the call object.
+		//	Note that when the retries have finished (#retry returns false) we
+		//	ultimately route the last result.
+		//
+		if(callObj.tries > 0 && result.error) {
+			console.log("TRYING: " + id);
+			if(!callObj.retry()) {
+				cleanup();
+			}
+		} else {
+			cleanup();
 		}
 
 		return this;
@@ -1325,52 +1559,60 @@ var mies = {
 	//																					//
 	//////////////////////////////////////////////////////////////////////////////////////
 
-	//	##bindEventSource
+	//	##join
 	//
-	//	Set up the #error, #open, and #message event handlers for the eventsource binding.
-	//	If the eventsource #id is registered in the CALLS lookup this is a
-	//	broadcast, which is routed as such. NOTE check for "!" prefix.
+	//	Set up the #error, #close, #open, and #message event handlers for the eventsource
+	//	binding. If #lastEventId returned by EventSource is registered in the CALLS lookup
+	//	this is a broadcast, which is routed as such.
 	//
-	bindEventSource : function(meetingId) {
-		var source = new EventSource('/receiveBroadcasts/' + (meetingId || "*"));
+	//	@see	#publish
+	//	@see	#route
+	//
+	join : function(meetingId, callback) {
 
-		//	When the eventsource client receives an error it will re-publish to
-		//	the server (which can log, etc).
-		//
-		source.addEventListener('error',  function(){
-			mies.publish("eventsource/error")
-		}, false);
+		var source = new EventSource('/system/receive/' + meetingId);
+		var conn;
 
-		//	Whenever client successfully opens a connection to eventsource. There is no
-		//	handling here, as the relevant "opening" occurs when the server broadcasts to
-		//	the `firstcontact` route.
-		//
-		source.addEventListener('open', function(){}, false);
+		source.addEventListener('open', function() {
 
-		//	All eventsource broadcasts will be to this channel. #lastEventId will be
-		//	an id (as per CALLS), or a route. #data is always sent as a JSON string.
-		//
-		source.addEventListener('message', function(msg) {
-
-			var data 	= JSON.parse(msg.data);
-			var id 		= msg.lastEventId;
-			var keep	= false;
-
-			if(CALLS[id]) {
-				if(id.charAt(0) === "!") {
-					keep = true;
-					id = id.substring(1, Infinity);
-				}
-				return mies.routeBroadcast(id, data, keep);
-			}
-
-			//	Otherwise, we should be receiving a route as an id.  Routes are sent
-			//	either by the server directly (server broadcasting its own info), or
-			//	are derived from a call the server received for a wide broadcast (in
-			//	which case a client one->many call cannot expect to have the source
-			//	context, such as the #callId, or of course the client call object itself).
+			//	Need only open once. If server connection is lost, #source will
+			//	re-establish itself.
 			//
-			return mies.route.call({}, id, "broadcast", data, {});
+			if(conn) {
+				return;
+			}
+			conn = 1;
+
+			source.addEventListener('error',  function() {
+				mies.route("eventsource/error", "broadcast", {})
+			}, false);
+
+			source.addEventListener('close',  function() {
+				mies.route("eventsource/close", "broadcast", {})
+			}, false);
+
+			source.addEventListener('message', function(msg) {
+
+				var data 	= JSON.parse(msg.data);
+				var id 		= msg.lastEventId;
+
+				if(CALLS[id]) {
+					return mies.routeBroadcast(id, data);
+				}
+
+				//	Otherwise, we should be receiving a route as an id.  Routes are sent
+				//	either by the server directly (server broadcasting its own info), or
+				//	are derived from a call the server received for a wide broadcast. In either
+				//	case there is no call object, so we create one.
+				//
+				//
+				mies.route.call(new mies._callObj({
+					result	: data
+				}), id, "broadcast", data, {});
+
+			}, false);
+
+			callback && callback(meetingId);
 
 		}, false);
 
@@ -1387,47 +1629,100 @@ var mies = {
 	//
 	//	Route all events originating on elements with a `data-action` attribute.
 	//
+	//	NOTE: you may set any number of space-separated routes.
+	//
 	//	@example	If I want a <div> to publish to a route when it is clicked:
 	//				<div data-action="click/some/route/here">clickme</div>, where
 	//				`click` indicates the action to bind, and `some/route/here`
 	//				being the actual route published to.
+	//
+	//				Also: <div data-action="click/foo mouseover/bar mouseout/baz">
 	//
 	//	@see	#route
 	//
 	bindUI : function() {
 		$(document.body).on(BOUND_UI_EVENTS, ACTION_SELECTOR, function(event) {
 
-			var target 		= $(event.currentTarget);
-			var actionRoute	= target.attr("data-action");
-			var rData 		= (actionRoute || "").match(/(\w+)\/(.+)([\/]?.*)/);
+			var $target 	= $(event.currentTarget);
+			var actionRoute	= $target.attr("data-action").split(" ");
 			var type		= event.type;
-
-			//	No match, no command, or action doesn't match
-			//
-			//	[1]	: The user action (click, mouseup, etc).
-			//	[2] : The custom command (openMyUIFeature).
-			//	[3] : The rest of the route.
-			//
-			if(!rData || !rData[1] || !rData[2] || rData[1] !== type) {
-				return this;
-			}
-
-			var route 		= rData[2] + rData[3];
-			var hashedRoute	= "#" + route;
 
 			//	Mainly to prevent href actions from firing.
 			//
 			event.preventDefault();
 
-			//	When we have a new route request with the ! directive (update hash), and the
-			//	current hash differs, update the hash.
-			//
-			if(actionRoute.indexOf("!") === 0 && window.location.hash !== hashedRoute) {
-				mies.updateHash(hashedRoute);
-			}
+			mies.each(actionRoute, function(ar) {
 
-			mies.route.call(target, route, type, event);
-			return this;
+				//	[1]	: The user action (click, mouseup, etc).
+				//	[2] : The first part of the route.
+				//	[3] : The rest of the route.
+				//
+				var rData 	= ar.match(/(\w+)\/(.+)([\/]?.*)/);
+
+				if(!rData) {
+					return this;
+				}
+
+				var pass = {
+					$target 	: $target
+				};
+
+				var readfrom 	= $target.attr("data-from");
+				var act 		= rData[1];
+				var form;
+				var parent;
+				var hash;
+
+				if(act.indexOf("!") === 0) {
+					hash = true;
+					act = act.substring(1, Infinity);
+				}
+
+				//	Leave if action doesn't match event type, or no route.
+				//
+				if(act !== type || !rData[2]) {
+					return this;
+				}
+
+				var route 		= rData[2] + (rData[3] || "");
+				var hashedRoute	= "#" + route;
+
+				//	When we have a new route request with the ! directive (update hash), and the
+				//	current hash differs, update the hash.
+				//
+				if(hash && window.location.hash !== hashedRoute) {
+					mies.updateHash(hashedRoute);
+				}
+
+				//	If not a broadcast, it is an action. If the action is anything other
+				//	than a `mousemove`, fetch and pass some useful target and event data.
+				//	(`mousemove` is unlikely to be the active interaction for a form change,
+				//	and as such the expense of seeking unnecessary form references on
+				//	invocations  with potential microsecond periodicity is too great. Note
+				//	handlers are called within the scope of the $target, so the handler
+				//	is free to replicate the given seek).
+				//
+				if(type !== "broadcast" && type !== "mousemove") {
+
+					//	Fetch any related forms.
+					//
+					if(readfrom && (form = $("#" + readfrom)).length) {}
+					else if(!(form = (parent = $target.parent()).find("form")).length) {
+						form = parent.parent().find("form");
+					}
+
+					if(form.length) {
+						form.find('input[type="text"]').each(function() {
+							var $t = $(this);
+							$t.val(mies.trim($t.val()));
+						});
+						pass.$form		= form;
+						pass.formData	= form.length ? form.serialize() : null;
+					}
+				}
+
+				mies.route.call($target, route, type, event, pass);
+			});
 		});
 
 		return this;
