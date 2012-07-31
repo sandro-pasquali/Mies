@@ -1395,7 +1395,7 @@ var mies = {
 		var m;
 		var rob;
 		var args;
-
+		
 		while(i--) {
 			rob = ROUTES[i];
 			
@@ -1492,7 +1492,6 @@ var mies = {
 		//	ultimately route the last result.
 		//
 		if(callObj.tries > 0 && result.error) {
-			console.log("TRYING: " + id);
 			if(!callObj.retry()) {
 				cleanup();
 			}
@@ -1561,36 +1560,23 @@ var mies = {
 
 	//	##join
 	//
-	//	Set up the #error, #close, #open, and #message event handlers for the eventsource
-	//	binding. If #lastEventId returned by EventSource is registered in the CALLS lookup
-	//	this is a broadcast, which is routed as such.
-	//
-	//	@see	#publish
-	//	@see	#route
-	//
 	join : function(meetingId, callback) {
-
 		var source = new EventSource('/system/receive/' + meetingId);
-		var conn;
 
+		//	When the eventsource client receives an error it will re-publish to
+		//	the server (which can log, etc).
+		//
+		source.addEventListener('error',  function() {
+			mies.route("eventsource/error", "broadcast", {})
+		}, false);
+
+		//	Should only fire once
+		//
 		source.addEventListener('open', function() {
 
-			//	Need only open once. If server connection is lost, #source will
-			//	re-establish itself.
+			//	All eventsource broadcasts will be to this channel. #lastEventId will be
+			//	an id (as per CALLS), or a route. #data is always sent as a JSON string.
 			//
-			if(conn) {
-				return;
-			}
-			conn = 1;
-
-			source.addEventListener('error',  function() {
-				mies.route("eventsource/error", "broadcast", {})
-			}, false);
-
-			source.addEventListener('close',  function() {
-				mies.route("eventsource/close", "broadcast", {})
-			}, false);
-
 			source.addEventListener('message', function(msg) {
 
 				var data 	= JSON.parse(msg.data);
@@ -1611,7 +1597,6 @@ var mies = {
 				}), id, "broadcast", data, {});
 
 			}, false);
-
 			callback && callback(meetingId);
 
 		}, false);
@@ -1645,47 +1630,30 @@ var mies = {
 
 			var $target 	= $(event.currentTarget);
 			var actionRoute	= $target.attr("data-action").split(" ");
-			var type		= event.type;
-
-			//	Mainly to prevent href actions from firing.
-			//
-			event.preventDefault();
+			var pass		= {};
+			var form;
 
 			mies.each(actionRoute, function(ar) {
 
+				var rData 	= ar.match(/(\w+)\/(.+)([\/]?.*)/);
+				var type	= event.type;
+
+				//	No match, no command, or action doesn't match
+				//
 				//	[1]	: The user action (click, mouseup, etc).
-				//	[2] : The first part of the route.
+				//	[2] : The custom command (openMyUIFeature).
 				//	[3] : The rest of the route.
 				//
-				var rData 	= ar.match(/(\w+)\/(.+)([\/]?.*)/);
-
-				if(!rData) {
+				if(!rData || !rData[1] || !rData[2] || rData[1] !== type) {
 					return this;
 				}
 
-				var pass = {
-					$target 	: $target
-				};
-
-				var readfrom 	= $target.attr("data-from");
-				var act 		= rData[1];
-				var form;
-				var parent;
-				var hash;
-
-				if(act.indexOf("!") === 0) {
-					hash = true;
-					act = act.substring(1, Infinity);
-				}
-
-				//	Leave if action doesn't match event type, or no route.
-				//
-				if(act !== type || !rData[2]) {
-					return this;
-				}
-
-				var route 		= rData[2] + (rData[3] || "");
+				var route 		= rData[2] + rData[3];
 				var hashedRoute	= "#" + route;
+
+				//	Mainly to prevent href actions from firing.
+				//
+				event.preventDefault();
 
 				//	When we have a new route request with the ! directive (update hash), and the
 				//	current hash differs, update the hash.
