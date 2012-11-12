@@ -689,6 +689,9 @@ var update	= function(args, _this, force) {
 	if(force || args.length === 2 || $.isPlainObject(args[0])) {
 		var boundTemplateId = $target.attr("data-template");
 		if(boundTemplateId) {
+		
+		console.log($target.data())
+		
 			$target.html(doT.template($("#" + boundTemplateId).text())($target.data()));
 		}
 	}
@@ -1563,7 +1566,9 @@ var mies = {
 				args = m.concat(action, passed, r);
 
 				if(result.error) {
-					rob.error && rob.error.apply(this, args);
+					//	Note how we shift the actual error message onto the front of args
+					//
+					rob.error && rob.error.apply(this, [result.error].concat(args));
 				} else {
 					if(action === "broadcast") {
 						rob.broadcast && rob.broadcast.apply(result, args);
@@ -1758,7 +1763,9 @@ var mies = {
 			var $target 	= $(event.currentTarget);
 			var actionRoute	= $target.attr("data-action").split(" ");
 			var pass		= {};
+			var readfrom	= $target.attr("readfrom");
 			var form;
+			var parent;
 
 			mies.each(actionRoute, function(ar) {
 
@@ -1785,7 +1792,7 @@ var mies = {
 				//	When we have a new route request with the ! directive (update hash), and the
 				//	current hash differs, update the hash.
 				//
-				if(hash && window.location.hash !== hashedRoute) {
+				if(CURRENT_HASH && window.location.hash !== hashedRoute) {
 					mies.updateHash(hashedRoute);
 				}
 
