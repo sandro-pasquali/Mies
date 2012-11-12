@@ -3,6 +3,7 @@
     "version": "0.1.2",
     "description": "Ultra-simple modular layout and template system, with automatic data binding and smart routing, for jQuery",
     "keywords": ["bauhaus","mies","albers","data","binding","template","jquery","framework"],
+    "main": "./mies",
     "author": "Sandro Pasquali <spasquali@gmail.com>",
     "engines": { "node": ">= 0.6.1" },
     "repository": {
