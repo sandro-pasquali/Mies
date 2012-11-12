@@ -1,11 +1,9 @@
 {
     "name": "mies",
-    "version": "0.1.1",
-    "url": "http://www.unifiedapplications.com/github/Mies",
-    "description": "Modular layout system for Bauhaus library",
-    "keywords": ["functional", "underscore", "array", "javascript", "nodejs", "lists", "list", "data", "data structures", "ui", "modular"],
+    "version": "0.1.2",
+    "description": "Ultra-simple modular layout and template system, with automatic data binding and smart routing, for jQuery",
+    "keywords": ["bauhaus","mies","albers","data","binding","template","jquery","framework"],
     "author": "Sandro Pasquali <spasquali@gmail.com>",
-    "main": "mies",
     "engines": { "node": ">= 0.6.1" },
     "repository": {
         "type"  : "git",
