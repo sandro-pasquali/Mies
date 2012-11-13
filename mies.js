@@ -689,9 +689,6 @@ var update	= function(args, _this, force) {
 	if(force || args.length === 2 || $.isPlainObject(args[0])) {
 		var boundTemplateId = $target.attr("data-template");
 		if(boundTemplateId) {
-		
-		console.log($target.data())
-		
 			$target.html(doT.template($("#" + boundTemplateId).text())($target.data()));
 		}
 	}
@@ -1523,12 +1520,12 @@ var mies = {
 		var m;
 		var rob;
 		var args;
-		
+
 		while(i--) {
 			rob = ROUTES[i];
-			
+
 			//	If the regex matches (not null) will receive an array, whose first argument
-			//	is the full route, and subsequent args will be any :part matches on 
+			//	is the full route, and subsequent args will be any :part matches on
 			//	the route. The first arg is shifted out, below, leaving only :part matches,
 			//	which come to form the first arguments sent to route event handlers.
 			//
