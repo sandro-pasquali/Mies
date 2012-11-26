@@ -6,13 +6,59 @@
 (function (global) {
   "use strict";
 
+  function Map() {
+    this.data = Object.create ? Object.create(null) : {};
+  }
+
+  var hasOwnProperty = Object.prototype.hasOwnProperty;
+
+  function escapeKey(key) {
+    return key !== "" && key.charAt(0) === "_" ? key + "~" : key;
+  }
+
+  Map.prototype = {
+    data: null,
+    get: function (key) {
+      var k = escapeKey(key);
+      var data = this.data;
+      return hasOwnProperty.call(data, k) ? data[k] : undefined;
+    },
+    set: function (key, value) {
+      this.data[escapeKey(key)] = value;
+    },
+    "delete": function (key) {
+      delete this.data[escapeKey(key)];
+    }
+  };
+
+  function Event(type) {
+    this.type = type;
+    this.eventPhase = 0;
+    this.currentTarget = null;
+    this.target = null;
+  }
+
+  Event.CAPTURING_PHASE = 1;
+  Event.AT_TARGET = 2;
+  Event.BUBBLING_PHASE = 3;
+
+  Event.prototype = {
+    type: "",
+    eventPhase: 0,
+    currentTarget: null,
+    target: null
+  };
+
   function EventTarget() {
-    this.listeners = Object.create ? Object.create(null) : {};
+    this.listeners = new Map();
     return this;
   }
 
   EventTarget.prototype = {
     listeners: null,
+    hasListeners: function (type) {
+      return this.listeners.get(String(type)) !== undefined;
+    },
     throwError: function (e) {
       setTimeout(function () {
         throw e;
@@ -22,13 +68,13 @@
       var type = String(event.type);
       var phase = event.eventPhase;
       var listeners = this.listeners;
-      var typeListeners = listeners[type];
+      var typeListeners = listeners.get(type);
       if (!typeListeners) {
         return;
       }
       var length = typeListeners.length;
-      var i = phase === 3 ? 1 : 0;
-      var increment = phase === 1 || phase === 3 ? 2 : 1;
+      var i = phase === Event.BUBBLING_PHASE ? 1 : 0;
+      var increment = phase === Event.CAPTURING_PHASE || phase === Event.BUBBLING_PHASE ? 2 : 1;
       while (i < length) {
         event.currentTarget = this;
         var listener = typeListeners[i];
@@ -44,16 +90,16 @@
       }
     },
     dispatchEvent: function (event) {
-      event.eventPhase = 2;
+      event.eventPhase = Event.AT_TARGET;
       this.invokeEvent(event);
     },
     addEventListener: function (type, callback, capture) {
       type = String(type);
       capture = Boolean(capture);
       var listeners = this.listeners;
-      var typeListeners = listeners[type];
+      var typeListeners = listeners.get(type);
       if (!typeListeners) {
-        listeners[type] = typeListeners = []; // CAPTURING BUBBLING
+        listeners.set(type, typeListeners = []); // CAPTURING BUBBLING
       }
       var i = typeListeners.length - (capture ? 2 : 1);
       while (i >= 0) {
@@ -69,7 +115,7 @@
       type = String(type);
       capture = Boolean(capture);
       var listeners = this.listeners;
-      var typeListeners = listeners[type];
+      var typeListeners = listeners.get(type);
       if (!typeListeners) {
         return;
       }
@@ -84,9 +130,9 @@
         i += 2;
       }
       if (filtered.length === 0) {
-        delete listeners[type];
+        listeners["delete"](type);
       } else {
-        listeners[type] = filtered;
+        listeners.set(type, filtered);
       }
     }
   };
@@ -149,20 +195,6 @@
     return n < 1 ? 1 : (n > 18000000 ? 18000000 : n);
   }
 
-  function Event(type) {
-    this.type = type;
-    this.eventPhase = 0;
-    this.currentTarget = null;
-    this.target = null;
-  }
-
-  Event.prototype = {
-    type: "",
-    eventPhase: 0,
-    currentTarget: null,
-    target: null
-  };
-
   function MessageEvent(type, options) {
     Event.call(this, type);
     this.data = options.data;
@@ -197,26 +229,11 @@
     var eventTypeBuffer = "";
     var wasCR = false;
     var responseBuffer = [];
-    var isChunkedTextSupported = true;
     var readyState = CONNECTING;
-    var onlineEventListener = null;
 
     options = null;
 
-    function removeOnlineListeners() {
-      if (onlineEventListener !== null) {
-        if (global.addEventListener) {
-          global.removeEventListener("online", onlineEventListener, false);
-        }
-        if (global.document && global.document.body && global.document.body.attachEvent) {
-          global.document.body.detachEvent("ononline", onlineEventListener);
-        }
-        onlineEventListener = null;
-      }
-    }
-
     function close() {
-      removeOnlineListeners();
       // http://dev.w3.org/html5/eventsource/ The close() method must close the connection, if any; must abort any instances of the fetch algorithm started for this EventSource object; and must set the readyState attribute to CLOSED.
       if (xhr !== null) {
         xhr.onload = xhr.onerror = xhr.onprogress = xhr.onreadystatechange = empty;
@@ -235,7 +252,7 @@
       that.readyState = CLOSED;
     }
 
-    function setConnectionState(event) {
+    function setConnectingState(event) {
       if (readyState !== CLOSED) {
         // setTimeout will wait before previous setTimeout(0) have completed
         if (retry > retryLimit) {
@@ -255,7 +272,7 @@
     }
 
     function onError() {
-      queue(setConnectionState, new Event("error"));
+      queue(setConnectingState, new Event("error"));
       if (xhrTimeout !== 0) {
         clearTimeout(xhrTimeout);
         xhrTimeout = 0;
@@ -404,7 +421,12 @@
         if (part !== "") {
           responseBuffer.push(part);
         }
-        charOffset = isChunkedTextSupported ? 0 : responseText.length;
+        charOffset = responseText.length;
+        if (responseText.length > 1024 * 1024) {
+          xhr.onload = xhr.onerror = xhr.onprogress = xhr.onreadystatechange = empty;
+          xhr.abort();
+          onError();
+        }
       }
     }
 
@@ -420,18 +442,11 @@
     }
 
     function openConnection() {
-      removeOnlineListeners();
+      reconnectTimeout = 0;
       if (navigator.onLine === false) {
-        onlineEventListener = openConnection;
-        if (global.addEventListener && global.ononline !== undefined) {
-          global.addEventListener("online", onlineEventListener, false);
-          return;
-        }
-        //! document.body is null while page is loading
-        if (global.document && global.document.body && global.document.body.attachEvent && global.document.body.ononline !== undefined) {
-          global.document.body.attachEvent("ononline", onlineEventListener);
-          return;
-        }
+        // "online" event is not supported under Web Workers
+        reconnectTimeout = setTimeout(openConnection, 500);
+        return;
       }
       // XDomainRequest#abort removes onprogress, onerror, onload
 
@@ -439,13 +454,14 @@
 
       // onprogress fires multiple times while readyState === 3
       // onprogress should be setted before calling "open" for Firefox 3.6
-      xhr.onprogress = onProgress;
+      if (xhr.mozAnon === undefined) {// Firefox shows loading indicator
+        xhr.onprogress = onProgress;
+      }
 
       // Firefox 3.6
       // onreadystatechange fires more often, than "progress" in Chrome and Firefox
       xhr.onreadystatechange = onReadyStateChange;
 
-      reconnectTimeout = 0;
       wasActivity = false;
       xhrTimeout = setTimeout(onXHRTimeout, heartbeatTimeout);
 
@@ -461,20 +477,10 @@
       // withCredentials should be setted after "open" for Safari and Chrome (< 19 ?)
       xhr.withCredentials = withCredentials;
 
+      xhr.responseType = "text";
+
       wasCR = false;
       responseBuffer.length = 0;
-      if (isChunkedTextSupported) {
-        var t = "moz-chunked-text";
-        try {
-          // setting xhr.responseType = t outputs annoying message in Chrome
-          if (xhr.setRequestHeader && !!global.webkitPostMessage) {
-            xhr.responseType = t;
-          }
-          isChunkedTextSupported = xhr.responseType === t;
-        } catch (e) {
-          //console.log(e);
-        }
-      }
 
       if (xhr.setRequestHeader) { // !XDomainRequest
         // http://dvcs.w3.org/hg/cors/raw-file/tip/Overview.html
@@ -497,14 +503,14 @@
       xhr.send(lastEventId !== "" ? "Last-Event-ID=" + encodeURIComponent(lastEventId) : "");
     }
 
-    openConnection();
-
     EventTarget.call(that);
     that.close = close;
-
     that.url = url;
     that.readyState = readyState;
     that.withCredentials = withCredentials;
+
+    openConnection();
+
     return that;
   }
 
