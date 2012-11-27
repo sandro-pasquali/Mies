@@ -739,6 +739,13 @@ var SUBSCRIPTIONS	= {};
 var LAST_SUBSCRIBE	= null;
 var MURMUR_SEED		= parseInt(Math.random() * 10000);
 
+//	If no auth id sent, mies communicates as a non-authed client (anonymous).
+//
+var SESSION_ID	= (function() {
+	var sessid = window.location.search.match(/[?&]sessid=([^&]*)/);
+	return sessid ? sessid[1] : null;
+})();
+
 //	Adjustment for trim methods.
 //
 //	See http://forum.jquery.com/topic/faster-jquery-trim.
@@ -1373,6 +1380,7 @@ var mies = {
 			data		: postdata,
 			dataType	: "json",
 			headers		: {
+				"x-mies-sessid"		: SESSION_ID,
 				"x-mies-callid"		: bType ? route : LAST_CALL_ID,
 				"x-mies-broadcast"	: bType || 1
 			},
@@ -1696,7 +1704,7 @@ var mies = {
 	//	##join
 	//
 	join : function(meetingId, callback) {
-		var source = new EventSource('/system/receive/' + meetingId);
+		var source = new EventSource('/system/receive/' + meetingId + '/' + SESSION_ID);
 
 		//	When the eventsource client receives an error it will re-publish to
 		//	the server (which can log, etc).
