@@ -1,6 +1,6 @@
 {
     "name": "mies",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "description": "Ultra-simple modular layout and template system, with automatic data binding and smart routing, for jQuery",
     "keywords": ["bauhaus","mies","albers","data","binding","template","jquery","framework"],
     "main": "./mies",

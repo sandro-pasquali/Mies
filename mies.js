@@ -743,7 +743,7 @@ var MURMUR_SEED		= parseInt(Math.random() * 10000);
 //
 var SESSION_ID	= (function() {
 	var sessid = window.location.search.match(/[?&]sessid=([^&]*)/);
-	return sessid ? sessid[1] : null;
+	return sessid ? sessid[1] : "*";
 })();
 
 //	Adjustment for trim methods.
