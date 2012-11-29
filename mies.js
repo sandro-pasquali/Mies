@@ -779,7 +779,7 @@ var COUNTER			= 1969;
 //
 //	@see	#mies#bindUI
 //
-var BOUND_UI_EVENTS = "click mousedown mouseup mouseover mouseout mouseenter mouseleave mousemove focus blur focusin focusout hover keyup keydown keypress";
+var BOUND_UI_EVENTS = "abort change click dblclick error mouseup mousedown mouseout mouseover mouseenter mouseleave keydown keyup keypress focus blur focusin focusout load unload submit reset resize select scroll";
 
 //	To enable a UI element to fire actions you would so something like:
 //
