@@ -739,12 +739,9 @@ var SUBSCRIPTIONS	= {};
 var LAST_SUBSCRIBE	= null;
 var MURMUR_SEED		= parseInt(Math.random() * 10000);
 
-//	If no auth id sent, mies communicates as a non-authed client (anonymous).
+//	@see	#join
 //
-var SESSION_ID	= (function() {
-	var sessid = window.location.search.match(/[?&]sessid=([^&]*)/);
-	return sessid ? sessid[1] : "*";
-})();
+var SESSION_ID;
 
 //	Adjustment for trim methods.
 //
@@ -1703,7 +1700,10 @@ var mies = {
 
 	//	##join
 	//
-	join : function(meetingId, callback) {
+	join : function(meetingId, sessId, callback) {
+		
+		SESSION_ID = sessId || SESSION_ID;
+		
 		var source = new EventSource('/system/receive/' + meetingId + '/' + SESSION_ID);
 
 		//	When the eventsource client receives an error it will re-publish to
