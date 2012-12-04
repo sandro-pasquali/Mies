@@ -1845,12 +1845,42 @@ var mies = {
 		$(document.body).off(BOUND_UI_EVENTS, ACTION_SELECTION);
 
 		return this;
+	},
+	
+	loadModules : function(cb) {
+		var $mods = $(".module[name]")
+		
+		if(!$mods.length) {
+			return cb();
+		}
+		
+		$mods.each(function() {
+			var $this 	= $(this);
+			var name	= $this.attr("name");
+			var auth	= $this.attr("data-auth") || "";
+			
+			//	Load once, avoiding future loads. To reload, $this.addClass("module").
+			//	Add identifying selector, mainly for css.
+			//
+			$this
+			.removeClass("module")
+			.addClass("module-" + name);
+					
+			$.getJSON("/module/" + name + "/" + auth, function(data) {
+				data.css && $("<style type=\"text/css\">" + data.css + "</style>").appendTo(document.head);
+				data.html && $this.html(data.html);
+				data.js && $.globalEval(data.js);
+				cb();
+			});
+		});
+		
+		return this;
 	}
 };
 
 mies
 	.set("timezoneOffset", new Date().getTimezoneOffset() /60)
-	.bindUI();
+	.loadModules(mies.bindUI);
 
 (typeof exports === 'object' ? exports : window)["mies"] = mies;
 
