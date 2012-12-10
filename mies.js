@@ -258,17 +258,6 @@ var OPTIONS = {
 	callTimeout	: 5000
 };
 
-//	@see	#mies#subscribe
-//	@see	#mies#error
-//	@see	#mies#done
-//	@see	#mies#always
-//
-var ADD_SUB_HANDLER = function(meth, fn) {
-	if(LAST_SUBSCRIBE) {
-		LAST_SUBSCRIBE[meth] = fn;
-	}
-};
-
 //	##ITERATOR
 //
 //	Returns accumulator as modified by passed selective function.
@@ -298,7 +287,7 @@ var	ITERATOR = function(targ, fn, acc, ctxt) {
 	var len;
 	var n;
 
-	if($.isArray(targ)) {
+	if(mies.is(Array, targ)) {
 		len = targ.length;
 		while(x < len) {
 			acc = fn.call(ctxt, targ[x], x, targ, acc);
@@ -810,33 +799,39 @@ var mies = {
 	//	@param	{Object}	[postdata]	This is always a POST.
 	//	@param	{Mixed}		[passed]	Data to be passed along to any handlers.
 	//	@param	{Boolean}	[bType]		Whether to do a mass broadcast.
+	//	@param	{Boolean}	[idem]		Whether
 	//
 	//	@see	#massPublish
 	//
-	publish : function(route, postdata, passed, bType) {
+	publish : function(route, postdata, passed, bType, idem) {
 		postdata = postdata || {};
 
-		//	Create a unique hash of sent arguments, which allows us
-		//	to cache results.
+		//	Using arguments if idem, arguments + random if not.
 		//
-		LAST_CALL_ID = this.murmurhash(JSON.stringify(arguments), MURMUR_SEED);
+		LAST_CALL_ID = this.murmurhash(JSON.stringify(arguments) + (idem ? "" : Math.random()), MURMUR_SEED);
 
-		//	Keep existing call objects for identical call signatures.
-		//
-		if(!CALLS[LAST_CALL_ID]) {
-			CALLS[LAST_CALL_ID] = new mies._callObj({
-				args		: AP_SLICE.call(arguments),
-				route		: route,
-				passed		: passed
-			});
+		var callObj = CALLS[LAST_CALL_ID];
+
+		if(callObj && idem) {
+			mies.route.call(callObj, callObj.route, "broadcast", callObj.result, callObj.passed);
+			return this;
 		}
+
+		CALLS[LAST_CALL_ID] = new mies._callObj({
+			args		: AP_SLICE.call(arguments),
+			route		: route,
+			passed		: passed,
+			idem		: idem
+		});
 
 		//	Of note:
 		//
-		//	The -call-id header is echoed by the server on an event, sent
-		//	as the value of #lastEventId (@see #join). On mass publish
+		//	The -callid header is echoed by the server on an event, sent
+		//	as the value of #callId when returned. On mass publish
 		//	we are sending the route (as the specific details of the individual client
 		//	call objects have no relevance across n clients).
+		//
+		//	@see 	#join
 		//
 		$.ajax({
 			type		: "POST",
@@ -856,24 +851,39 @@ var mies = {
 
 	//	##massPublish
 	//
-	//	A shortcut bridge to #publish. Also recommended for code clarity.
+	//	A shortcut bridge to #publish, passing correct broadcast type.
+	//	Recommended for code clarity.
 	//
 	//	@see	#publish
 	//
-	massPublish : function(route, postdata, passed) {
-		return mies.publish(route, postdata, passed, 2);
+	massPublish : function(route, postdata, passed, idem) {
+		return mies.publish(route, postdata, passed, 2, idem);
 	},
 
 	//	##nearPublish
 	//
-	//	A shortcut bridge to #publish. Also recommended for code clarity.
+	//	A shortcut bridge to #publish, passing correct broadcast type.
+	//	Recommended for code clarity.
 	//
 	//	@see	#publish
 	//
-	nearPublish : function(route, postdata, passed) {
-		return mies.publish(route, postdata, passed, 3);
+	nearPublish : function(route, postdata, passed, idem) {
+		return mies.publish(route, postdata, passed, 3, idem);
 	},
 
+	//	If the route result, given identical arguments, is 
+	publishCache : function(route, postdata, passed, bType) {
+		return mies.publish(route, postdata, passed, bType, 1);
+	},
+
+	massPublishCache : function(route, postdata, passed) {
+		return mies.publish(route, postdata, passed, 2, 1);
+	},
+
+	nearPublishCache : function(route, postdata, passed) {
+		return mies.publish(route, postdata, passed, 3, 1);
+	},
+	
 	//	##subscribe
 	//
 	//	Register a route for this interface which can now be published to.
@@ -924,42 +934,6 @@ var mies = {
 				delete ROUTES[len];
 			}
 		}
-
-		return this;
-	},
-
-	//	##action
-	//
-	action : function(fn) {
-
-		ADD_SUB_HANDLER("action", fn);
-
-		return this;
-	},
-
-	//	##broadcast
-	//
-	broadcast : function(fn) {
-
-		ADD_SUB_HANDLER("broadcast", fn);
-
-		return this;
-	},
-
-	//	##error
-	//
-	error	: function(fn) {
-
-		ADD_SUB_HANDLER("error", fn);
-
-		return this;
-	},
-
-	//	##always
-	//
-	always : function(fn) {
-
-		ADD_SUB_HANDLER("always", fn);
 
 		return this;
 	},
@@ -1015,12 +989,12 @@ var mies = {
 				//
 				r = m.shift();
 
-				//	Either a client action (action) or a S.S.E. (broadcast).
+				//	Either a client action (action) or a socket action (broadcast).
 				//	All subscribe handlers receive three arguments:
 				//
 				//	1. 	The action. This is only relevant on client actions, where
-				//		it will be something like "click" or "mouseup". S.S.E.
-				//		will always be of action type "broadcast".
+				//		it will be something like "click" or "mouseup". Socket push is
+				//		always of action type "broadcast".
 				//	2.	Passed object. Client actions may pass along values (sent
 				//		when #publish is called. Broadcasts never have passed arguments,
 				//		so this will always be an empty object.
@@ -1048,7 +1022,12 @@ var mies = {
 					if(action === "broadcast") {
 						rob.broadcast && rob.broadcast.apply(result, args);
 					} else {
+						//	General .action binding
+						//
 						rob.action && rob.action.apply(result, args);
+						//	Specific (.click, .mousedown) binding.
+						//
+						rob[action] && rob[action].apply(result, args);
 					}
 				}
 
@@ -1157,6 +1136,30 @@ var mies = {
 		ret.compiled = new RegExp(ret.serialized);
 
 		return ret;
+	},
+	
+	//	##addRouteEvent
+	//
+	//	Add a named method bindable within a #subscribe block.
+	//
+	//	@example	mies.addRouteEvent("foo")
+	//				mies.subscribe("/some/route")
+	//				mies.foo(function() {
+	//					// This can now be fired with mies.route("/some/route", "foo", {data: "here"})
+	//				})
+	//
+	//	This is the method used to bind #action, #broadcast, and the other core subscribe methods.
+	//
+	//	@param	{String}	ev		A string name for this event.
+	//
+	addRouteEvent : function(ev) {
+		mies[ev] = function(fn) {
+			if(LAST_SUBSCRIBE) {
+				LAST_SUBSCRIBE[ev] = fn;
+			}
+			return mies;
+		}
+		return this;
 	},
 
 	//////////////////////////////////////////////////////////////////////////////////////
@@ -1332,8 +1335,10 @@ var mies = {
 	},
 	
 	loadModules : function(cb) {
-		var $mods = $(".module[name]")
+		var $mods = $(".module[name]");
 		
+		cb = cb || $.noop;		
+
 		if(!$mods.length) {
 			return cb();
 		}
@@ -1344,7 +1349,7 @@ var mies = {
 			var auth	= $this.attr("data-auth") || "";
 			
 			//	Load once, avoiding future loads. To reload, $this.addClass("module").
-			//	Add identifying selector, mainly for css.
+			//	Add identifying class selector, mainly for css.
 			//
 			$this
 			.removeClass("module")
@@ -1361,6 +1366,12 @@ var mies = {
 		return this;
 	}
 };
+
+//	Add the #subscribe block handlers (all ui events [click, mousedown, etc] + internals)
+//
+mies.each(BOUND_UI_EVENTS.split(" ").concat("action","broadcast","error","always"), function(e) {
+	mies.addRouteEvent(e);
+})
 
 mies
 	.set("timezoneOffset", new Date().getTimezoneOffset() /60)
