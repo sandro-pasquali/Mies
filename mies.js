@@ -1,4 +1,4 @@
-$(function() {
+(function() {
 
 "use strict";
 
@@ -203,12 +203,13 @@ var READY			= [];
 var CALLS			= {};
 var SUBSCRIPTIONS	= {};
 var LAST_SUBSCRIBE	= null;
-var MURMUR_SEED		= parseInt(Math.random() * 10000);
+var MURMUR_SEED		= parseInt(Math.random() * 1000000000);
 
 //	@see	#join
 //
 var SESSION_ID;
 var IS_SOCK;
+var REMOTE_URL	= "";
 
 //	Adjustment for trim methods.
 //
@@ -824,6 +825,10 @@ var mies = {
 			idem		: idem
 		});
 
+		var cid = bType ? route : LAST_CALL_ID;
+
+		bType = bType || 1;
+
 		//	Of note:
 		//
 		//	The -callid header is echoed by the server on an event, sent
@@ -833,20 +838,32 @@ var mies = {
 		//
 		//	@see 	#join
 		//
-		$.ajax({
+		var opts = {
 			type		: "POST",
-			url			: route,
+			url			: REMOTE_URL + route,
 			data		: postdata,
 			dataType	: "json",
 			headers		: {
 				"x-mies-sessid"		: SESSION_ID,
-				"x-mies-callid"		: bType ? route : LAST_CALL_ID,
-				"x-mies-broadcast"	: bType || 1
+				"x-mies-callid"		: cid,
+				"x-mies-broadcast"	: bType
 			},
 			timeout		: OPTIONS.callTimeout
-		});
+		}
 
-		return this;
+		if(REMOTE_URL) {
+			opts.crossDomain 	= true;
+			opts.dataType 		= "jsonp";
+
+			//	JSONP uses a script insert, not an xhr request. As such, headers cannot
+			//	be sent. Send them as a query.
+			//
+			opts.url += "?x-mies-sessid=" + SESSION_ID + "&x-mies-callid=" + cid + "&x-mies-broadcast=" + bType;
+		}
+
+		jQuery.ajax(opts);
+
+		return mies;
 	},
 
 	//	##massPublish
@@ -871,7 +888,6 @@ var mies = {
 		return mies.publish(route, postdata, passed, 3, idem);
 	},
 
-	//	If the route result, given identical arguments, is 
 	publishCache : function(route, postdata, passed, bType) {
 		return mies.publish(route, postdata, passed, bType, 1);
 	},
@@ -904,7 +920,7 @@ var mies = {
 			}) -1];
 		}
 
-		return this;
+		return mies;
 	},
 
 	//	##subscribenx
@@ -968,10 +984,15 @@ var mies = {
 	//	@see	#publish
 	//
 	route : function(r, action, result, passed) {
+	
 		var i 	= ROUTES.length;
 		var m;
 		var rob;
 		var args;
+		
+		//	When routing "by hand" there may be no #result sent.
+		//
+		result = result || {};
 
 		while(i--) {
 			rob = ROUTES[i];
@@ -1014,21 +1035,19 @@ var mies = {
 				//
 				args = m.concat(action, passed, r);
 
-				if(result.error) {
+				if(result.hasOwnProperty("error")) {
 					//	Note how we shift the actual error message onto the front of args
 					//
 					rob.error && rob.error.apply(this, [result.error].concat(args));
+				} else if(action === "broadcast") {
+					rob.broadcast && rob.broadcast.apply(result, args);
 				} else {
-					if(action === "broadcast") {
-						rob.broadcast && rob.broadcast.apply(result, args);
-					} else {
-						//	General .action binding
-						//
-						rob.action && rob.action.apply(result, args);
-						//	Specific (.click, .mousedown) binding.
-						//
-						rob[action] && rob[action].apply(result, args);
-					}
+					//	General .action binding
+					//
+					rob.action && rob.action.apply(result, args);
+					//	Specific (.click, .mousedown) binding.
+					//
+					rob[action] && rob[action].apply(result, args);
 				}
 
 				rob.always && rob.always.apply(result, args);
@@ -1044,13 +1063,14 @@ var mies = {
 			}
 		}
 
-		return this;
+		return mies;
 	},
 
 	//	##routeBroadcast
 	//
-	//	Pre-process "broadcast" (vs. "event") publications. All server-sent events so routed
-	//	should have been "published" by *this* client, which would create a CALLS entry.
+	//	Route messages received on socket. Expects a callId, and a result.
+	//	Main responsibility is to dispatch to #route if all is well, or to retry
+	//	if that has been requested.
 	//
 	//	@param	{String}	id		The call id.
 	//	@param	{Object}	result	The server response.
@@ -1059,14 +1079,16 @@ var mies = {
 
 		var callObj = CALLS[id];
 		if(!callObj) {
-			return this;
+			return mies;
 		}
 
 		callObj.result 	= result;
 
 		var cleanup = function() {
 			mies.route.call(callObj, callObj.route, "broadcast", result, callObj.passed);
-			delete CALLS[id];
+			if(!callObj.idem) {
+				delete CALLS[id];
+			}
 		}
 
 		//	If in an error state and a retry was requested, run #retry.
@@ -1082,7 +1104,7 @@ var mies = {
 			cleanup();
 		}
 
-		return this;
+		return mies;
 	},
 
 	//	##parseRoute
@@ -1159,81 +1181,9 @@ var mies = {
 			}
 			return mies;
 		}
-		return this;
+		return mies;
 	},
-
-	//////////////////////////////////////////////////////////////////////////////////////
-	//																					//
-	//							Communication layer setup								//
-	//																					//
-	//////////////////////////////////////////////////////////////////////////////////////
-
-	//	##join
-	//
-	join : function(groupId, sessId, transport, callback) {
-		
-		SESSION_ID = sessId || SESSION_ID;
-		
-		if(typeof transport === "function") {
-			callback 	= transport;
-			transport 	= null; 
-		}
-		
-		IS_SOCK = transport === "socket";
-
-		$.get([
-			"js/eventsource.js", 
-			"/socket.io/socket.io.js"
-		][IS_SOCK ? 1 : 0], function(scr) {
-		
-			$.globalEval(scr);
-			
-			var onMessage = function(data) {
-
-				var id 	= data.id;
-				
-				if(CALLS[id]) {
-					return mies.routeBroadcast(id, data);
-				}
-			};
-
-			if(IS_SOCK) {
-				var socket = io.connect('/?sessId=' + SESSION_ID + '&groupId=' + groupId);
-			
-				socket.on('connect', function() {
-					socket.on('message', onMessage);
-					
-					callback && callback(SESSION_ID, groupId);
-				});
-				
-				return;
-			}
-
-			var source = new EventSource('/system/receive/' + groupId + '/' + SESSION_ID);
-
-			//	Should only fire once
-			//
-			source.addEventListener('open', function() {
 	
-				//	All eventsource broadcasts will be to this channel. #lastEventId will be
-				//	an id (as per CALLS), or a route. #data is always sent as a JSON string.
-				//
-				source.addEventListener('message', function(msg) {
-					onMessage({
-						data	: JSON.parse(msg.data).data,
-						id		: msg.lastEventId
-					});
-					
-				}, false);
-				
-				callback && callback(SESSION_ID, groupId);
-	
-			}, false);
-		});
-		
-		return this;
-	},
-
 	//////////////////////////////////////////////////////////////////////////////////////
 	//																					//
 	//										UI Binding									//
@@ -1258,7 +1208,7 @@ var mies = {
 	bindUI : function() {
 		$(document.body).on(BOUND_UI_EVENTS, ACTION_SELECTOR, function(event) {
 
-			var $target 	= $(event.currentTarget);
+			var $target 	= jQuery(event.currentTarget);
 			var actionRoute	= $target.attr("data-action").split(" ");
 			var pass		= {};
 			var readfrom	= $target.attr("readfrom");
@@ -1267,21 +1217,39 @@ var mies = {
 
 			mies.each(actionRoute, function(ar) {
 
-				var rData 	= ar.match(/(\w+)\/(.+)([\/]?.*)/);
+				var rData 	= ar.match(/([!#\w]+)\/([\/\w]+)([\/]?.*)/);
 				var type	= event.type;
 
-				//	No match, no command, or action doesn't match
-				//
+				//	[0]	: The complete value of #data-action
 				//	[1]	: The user action (click, mouseup, etc).
-				//	[2] : The custom command (openMyUIFeature).
-				//	[3] : The rest of the route.
+				//	[2] : The rest of the route.
 				//
-				if(!rData || !rData[1] || !rData[2] || rData[1] !== type) {
-					return this;
+
+				//	If malformed, exit
+				//
+				if(!rData || !rData[1] || !rData[2]) {
+					return mies;
 				}
 
-				var route 		= rData[2] + rData[3];
+				var action 		= rData[1];
+				var route		= rData[2];
 				var hashedRoute	= "#" + route;
+
+				//	Special cases
+				//
+				//	If the user action is preceeded by a bang(!) then this is a direct publish
+				//	routing. Note that the action type (such as `click`) must still match.
+				//
+				//	If preceeded by a hash(#) we update the hash (which is watched),
+				//	allowing back button, bookmarking, etc.
+				//
+				if(action.charAt(0) === "!" && action.substring(1, Infinity) === type) {
+					return mies.publish(route);
+				}
+
+				if(action !== type) {
+					return mies;
+				}
 
 				//	Mainly to prevent href actions from firing.
 				//
@@ -1291,29 +1259,26 @@ var mies = {
 				//	current hash differs, update the hash.
 				//
 				if(CURRENT_HASH && window.location.hash !== hashedRoute) {
-					mies.updateHash(hashedRoute);
+					//mies.updateHash(hashedRoute);
 				}
 
-				//	If not a broadcast, it is an action. If the action is anything other
-				//	than a `mousemove`, fetch and pass some useful target and event data.
+				//	If the action is anything other than a `mousemove`, fetch and pass some
+				//	useful target and event data, such as a bound form.
 				//	(`mousemove` is unlikely to be the active interaction for a form change,
 				//	and as such the expense of seeking unnecessary form references on
 				//	invocations  with potential microsecond periodicity is too great. Note
 				//	handlers are called within the scope of the $target, so the handler
 				//	is free to replicate the given seek).
 				//
-				if(type !== "broadcast" && type !== "mousemove") {
-
-					//	Fetch any related forms.
-					//
-					if(readfrom && (form = $("#" + readfrom)).length) {}
+				if(type !== "mousemove") {
+					if(readfrom && (form = jQuery("#" + readfrom)).length) {}
 					else if(!(form = (parent = $target.parent()).find("form")).length) {
 						form = parent.parent().find("form");
 					}
 
 					if(form.length) {
 						form.find('input[type="text"]').each(function() {
-							var $t = $(this);
+							var $t = jQuery(this);
 							$t.val(mies.trim($t.val()));
 						});
 						pass.$form		= form;
@@ -1325,58 +1290,173 @@ var mies = {
 			});
 		});
 
-		return this;
+		return mies;
 	},
 
 	unbindUI : function() {
-		$(document.body).off(BOUND_UI_EVENTS, ACTION_SELECTION);
+		jQuery(document.body).off(BOUND_UI_EVENTS, ACTION_SELECTION);
 
-		return this;
+		return mies;
 	},
-	
-	loadModules : function(cb) {
-		var $mods = $(".module[name]");
-		
-		cb = cb || $.noop;		
 
-		if(!$mods.length) {
-			return cb();
+	//////////////////////////////////////////////////////////////////////////////////////
+	//																					//
+	//							Communication layer setup								//
+	//																					//
+	//////////////////////////////////////////////////////////////////////////////////////
+
+	//	##join
+	//
+	join : function(groupId, sessId, transport, callback, remoteUrl) {
+		
+		SESSION_ID = sessId || SESSION_ID;
+		
+		if(typeof transport === "function") {
+			remoteUrl	= callback;
+			callback 	= transport;
+			transport 	= null; 
 		}
 		
-		$mods.each(function() {
-			var $this 	= $(this);
-			var name	= $this.attr("name");
-			var auth	= $this.attr("data-auth") || "";
+		REMOTE_URL	= remoteUrl || "";
+		
+		IS_SOCK = transport === "socket";
+
+		$.getScript(REMOTE_URL + [
+			"/js/eventsource.js", 
+			"/socket.io/socket.io.js"
+		][IS_SOCK ? 1 : 0], function(scr) {
+
+			var onMessage = function(data) {
+
+				var id 	= data.id;
+				
+				if(CALLS[id]) {
+					return mies.routeBroadcast(id, data);
+				}
+			};
+
+			if(IS_SOCK) {
+				var socket = io.connect(REMOTE_URL + '/?sessId=' + SESSION_ID + '&groupId=' + groupId);
 			
-			//	Load once, avoiding future loads. To reload, $this.addClass("module").
-			//	Add identifying class selector, mainly for css.
+				//	After connection, socket emits a handshake message, which may
+				//	contain additional info for the client. When this is received the
+				//	#join chain is complete.
+				//
+				socket.on('handshake', function(userdata) {
+					callback && callback.call(userdata || {}, SESSION_ID, groupId);
+				});
+		
+				socket.on('connect', function() {
+					socket.on('message', onMessage);
+				});
+				
+				return mies;
+			}
+
+			var source = new EventSource(REMOTE_URL + '/system/receive/' + groupId + '/' + SESSION_ID);
+
+			//	Should only fire once
 			//
-			$this
-			.removeClass("module")
-			.addClass("module-" + name);
+			source.addEventListener('open', function() {
+	
+				//	All eventsource broadcasts will be to this channel. #lastEventId will be
+				//	an id (as per CALLS), or a route. #data is always sent as a JSON string.
+				//
+				source.addEventListener('message', function(msg) {
+					onMessage({
+						data	: JSON.parse(msg.data).data,
+						id		: msg.lastEventId
+					});
 					
-			$.getJSON("/module/" + name + "/" + auth, function(data) {
-				data.css && $("<style type=\"text/css\">" + data.css + "</style>").appendTo(document.head);
-				data.html && $this.html(data.html);
-				data.js && $.globalEval(data.js);
-				cb();
-			});
+				}, false);
+				
+				callback && callback(SESSION_ID, groupId);
+	
+			}, false);
 		});
 		
-		return this;
+		return mies;
+	},
+	
+	joinRemote : function(url, groupId, sessId, transport, callback) {
+		return mies.join(groupId, sessId, transport, callback, url);
+	},
+
+	//	##loadModule
+	//
+	//	@param 	{Object}	params	A map of properties, in form:
+	//								#name{String}			The module name
+	//								[#auth]{String}			"true" or "false"
+	//								[#$target]{jQueryObj}	Any module html -> $target.html(...)
+	//								[#callback]{Function}	On loaded is passed [$element]
+	//
+	loadModule : function(params) {
+
+		var name 	= params.name;
+		var auth	= params.auth || "";
+		var cb		= params.callback;
+		var $targ	= params.$target;
+
+		//	Load once, avoiding future loads. To reload, $this.addClass("module").
+		//	Add identifying selector, mainly for css.
+		//
+		$targ && $targ
+		.removeClass("module")
+		.addClass("module-" + name);
+
+		jQuery.getJSON("/module/" + name + "/" + auth, function(data) {
+			data.css && jQuery("<style type=\"text/css\">" + data.css + "</style>").appendTo(document.head);
+			data.html && $targ && $targ.html(data.html);
+			data.js && jQuery.globalEval(data.js);
+
+			mies.route("/module-" + name, "load", $targ);
+
+			cb && cb($targ);
+		});
+	},
+
+	loadModules : function(cb) {
+
+		var $mods 	= jQuery(".module[name]");
+		var len		= $mods.length;
+
+		if(!len) {
+			return cb();
+		}
+
+		$mods.each(function() {
+			var $this = jQuery(this);
+			mies.loadModule({
+				name		: $this.attr("name"),
+				auth		: $this.attr("data-auth") || "",
+				$target		: $this,
+				callback	: function() {
+					if(--len < 1) {
+						mies.route("/modules", "load", $mods);
+						cb && cb($this);
+					}
+				}
+			});
+		});
+
+		return mies;
 	}
 };
 
 //	Add the #subscribe block handlers (all ui events [click, mousedown, etc] + internals)
 //
-mies.each(BOUND_UI_EVENTS.split(" ").concat("action","broadcast","error","always"), function(e) {
+mies.each(BOUND_UI_EVENTS.split(" ").concat("action","broadcast","error","always","login"), function(e) {
 	mies.addRouteEvent(e);
 })
 
-mies
+//	When the document is ready, bind
+//
+jQuery(function() {
+	mies
 	.set("timezoneOffset", new Date().getTimezoneOffset() /60)
 	.loadModules(mies.bindUI);
+});
 
 (typeof exports === 'object' ? exports : window)["mies"] = mies;
 
-});
+})();
